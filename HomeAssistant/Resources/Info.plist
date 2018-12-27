@@ -17,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.4</string>
+	<string>1.5.0</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
@@ -32,11 +32,11 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>33</string>
 	<key>Fabric</key>
 	<dict>
 		<key>APIKey</key>
-		<string>${HOMEASSISTANT_FABRIC_CLIENT_ID}</string>
+		<string>af2930e95b69736a32e543d07fe9c8078649a61e</string>
 		<key>Kits</key>
 		<array>
 			<dict>
@@ -67,22 +67,15 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
-	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>To allow PermissionScope and SwiftLocation to work under iOS 10</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>To allow PermissionScope to work under iOS 10</string>
-	<key>NSContactsUsageDescription</key>
-	<string>To allow PermissionScope to work under iOS 10</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>We suggest selecting "Always Allow" for the best location experience.
+Selecting "Only While Using the App" will disable iBeacons, geofences, background location updates and accurate reporting.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>To send location to Home Assistant</string>
+	<string>We always need access to your location for features like iBeacons, geofences, background location updates and accurate reporting.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>To send location to Home Assistant</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>To allow PermissionScope to work under iOS 10</string>
+	<string>Only allowing location access while app is in use will disable iBeacons, geofences, background location updates and accurate reporting.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>To allow PermissionScope to work under iOS 10</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>To allow PromiseKit to work under iOS 10</string>
+	<string>Motion is used to improve location updates with current motion type, as well as provide basic pedometer data.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
@@ -111,6 +104,8 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>

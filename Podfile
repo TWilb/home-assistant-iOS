@@ -6,54 +6,81 @@ use_frameworks!
 plugin 'cocoapods-acknowledgements'
 
 target 'HomeAssistant' do
-  pod 'Alamofire'
-  pod 'AlamofireImage'
-  pod 'AlamofireNetworkActivityIndicator'
-  pod 'AlamofireObjectMapper'
-  pod 'CPDAcknowledgements'
-  pod 'Crashlytics'
-  pod 'DeviceKit'
-  pod 'Eureka', :git => 'https://github.com/xmartlabs/Eureka.git', :branch => 'master'
-  pod 'Fabric'
+  pod 'Alamofire', '4.7.3'
+  pod 'AlamofireNetworkActivityIndicator', '2.2.1'
+  pod 'AlamofireObjectMapper', '5.1.0'
+  pod 'arek/Location', '3.0.0'
+  pod 'arek/Motion', '3.0.0'
+  pod 'arek/Notifications', '3.0.0'
+  pod 'CPDAcknowledgements', '1.0.0'
+  pod 'Crashlytics', '3.10.2'
+  pod 'DeviceKit', '1.7.0'
+  pod 'Eureka', '4.1.1'
+  pod 'Fabric', '1.7.7'
   pod 'FontAwesomeKit/MaterialDesignIcons', :git => 'https://github.com/robbiet480/FontAwesomeKit.git', :branch => 'Material-Design-Icons'
-  pod 'KeychainAccess'
-  pod 'MBProgressHUD'
-  pod 'ObjectMapper'
-  pod 'PermissionScope', :git => 'https://github.com/robbiet480/PermissionScope.git', :branch => 'swift3-ios10-usernotifications'
-  pod 'PromiseKit'
-  pod 'Realm'
+  pod 'KeychainAccess', '3.1.1'
+  pod 'MBProgressHUD', '1.1.0'
+  pod 'ObjectMapper', '3.3.0'
+  pod 'PromiseKit', '6.3.0'
   pod 'RealmSwift'
-  pod 'SwiftGen'
-  pod 'SwiftLint'
-  pod 'SwiftLocation'
+  pod 'SwiftGen', '5.3.0'
+  pod 'SwiftLint', '0.25.1'
+
+  target 'HomeAssistantTests' do
+    inherit! :search_paths
+  end
 end
 
-target 'HomeAssistantTests' do
-
+target 'Shared' do
+    pod 'Alamofire', '4.7.3'
+    pod 'AlamofireImage', '3.4.1'
+    pod 'AlamofireObjectMapper', '5.1.0'
+    pod 'Crashlytics', '3.10.2'
+    pod 'DeviceKit', '1.7.0'
+    pod 'FontAwesomeKit/MaterialDesignIcons', :git => 'https://github.com/robbiet480/FontAwesomeKit.git', :branch => 'Material-Design-Icons'
+    pod 'KeychainAccess', '3.1.1'
+    pod 'ObjectMapper', '3.3.0'
+    pod 'PromiseKit', '6.3.0'
+    pod 'RealmSwift'
+  target 'SharedTests' do
+    inherit! :search_paths
+  end
 end
+
 
 target 'HomeAssistantUITests' do
 
 end
 
 target 'APNSAttachmentService' do
-  pod 'KeychainAccess'
+  pod 'KeychainAccess', '3.1.1'
+  pod 'RealmSwift'
+   pod 'Alamofire', '4.7.3'
+    pod 'AlamofireObjectMapper', '5.1.0'
+    pod 'DeviceKit', '1.7.0'
+    pod 'FontAwesomeKit/MaterialDesignIcons', :git => 'https://github.com/robbiet480/FontAwesomeKit.git', :branch => 'Material-Design-Icons'
+    pod 'ObjectMapper', '3.3.0'
+    pod 'PromiseKit', '6.3.0'
+    pod 'RealmSwift'
 end
 
 target 'MapNotificationContentExtension' do
-    pod 'MBProgressHUD'
+  pod 'MBProgressHUD', '1.1.0'
+  pod 'RealmSwift'
 end
 
 
 target 'NotificationContentExtension' do
-  pod 'KeychainAccess'
-  pod 'MBProgressHUD'
-end
+    pod 'Alamofire', '4.7.3'
+    pod 'AlamofireImage', '3.4.1'
+    pod 'AlamofireObjectMapper', '5.1.0'
+    pod 'Crashlytics', '3.10.2'
+    pod 'DeviceKit', '1.7.0'
+    pod 'FontAwesomeKit/MaterialDesignIcons', :git => 'https://github.com/robbiet480/FontAwesomeKit.git', :branch => 'Material-Design-Icons'
+    pod 'KeychainAccess', '3.1.1'
+    pod 'ObjectMapper', '3.3.0'
+    pod 'PromiseKit', '6.3.0'
+    pod 'RealmSwift'
 
-post_install do |installer|
-    installer.pods_project.targets.each do |target|
-        target.build_configurations.each do |config|
-            config.build_settings['SWIFT_VERSION'] = '3.0'
-        end
-    end
+  pod 'MBProgressHUD', '1.1.0'
 end

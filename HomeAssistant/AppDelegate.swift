@@ -10,66 +10,51 @@ import UIKit
 import Fabric
 import Crashlytics
 import PromiseKit
-import RealmSwift
 import UserNotifications
 import AlamofireNetworkActivityIndicator
 import KeychainAccess
-import SwiftLocation
+import Alamofire
+import RealmSwift
+import Shared
+import SafariServices
+import arek
 
-let realmConfig = Realm.Configuration(schemaVersion: 3, migrationBlock: nil)
+let keychain = Keychain(service: "io.robbie.homeassistant")
 
-// swiftlint:disable:next force_try
-let realm = try! Realm(configuration: realmConfig)
-
-let keychain = Keychain(service: "io.robbie.homeassistant", accessGroup: "UTQFCBPQRF.io.robbie.HomeAssistant")
-
-let prefs = UserDefaults(suiteName: "group.io.robbie.homeassistant")!
+let prefs = UserDefaults(suiteName: Constants.AppGroupID)!
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
-
     var window: UIWindow?
-
+    var safariVC: SFSafariViewController?
+    private(set) var regionManager: RegionManager!
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplicationLaunchOptionsKey: Any]?) -> Bool {
-        Realm.Configuration.defaultConfiguration = realmConfig
-        print("Realm file path", Realm.Configuration.defaultConfiguration.fileURL!.path)
+        let launchingForLocation = launchOptions?[.location] != nil
+        let launchMessage = "Application Starting" + (launchingForLocation ? " due to location change" : "")
+        let event = ClientEvent(text: launchMessage, type: .unknown)
+        Current.clientEventStore.addEvent(event)
+        CheckPermissionsStatus()
+        Current.deviceIDProvider = { DeviceUID.uid() }
+        self.regionManager = RegionManager()
+
         Fabric.with([Crashlytics.self])
 
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
-
-        if launchOptions?[UIApplicationLaunchOptionsKey.location] != nil {
-            resumeRegionMonitoring()
+        Current.syncMonitoredRegions = { self.regionManager.syncMonitoredRegions() }
+        if prefs.bool(forKey: "locationUpdateOnBackgroundFetch") {
+            UIApplication.shared.setMinimumBackgroundFetchInterval(UIApplicationBackgroundFetchIntervalMinimum)
         }
 
-        UIApplication.shared.setMinimumBackgroundFetchInterval(UIApplicationBackgroundFetchIntervalMinimum)
-
         NetworkActivityIndicatorManager.shared.isEnabled = true
-
         if #available(iOS 10, *) {
             UNUserNotificationCenter.current().delegate = self
         }
 
-        Crashlytics.sharedInstance().setObjectValue(prefs.integer(forKey: "lastInstalledVersion"),
-                                                    forKey: "lastInstalledVersion")
-        if let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") {
-            if let stringedBundleVersion = bundleVersion as? String {
-                prefs.set(stringedBundleVersion, forKey: "lastInstalledVersion")
-            }
-        }
-
-        if prefs.object(forKey: "openInChrome") == nil && OpenInChromeController().isChromeInstalled() {
-            prefs.setValue(true, forKey: "openInChrome")
-            prefs.synchronize()
-        }
-
-        registerForSignificantLocationUpdates()
+        setDefaults()
 
         window = UIWindow.init(frame: UIScreen.main.bounds)
         window?.backgroundColor = .white
 
-//        let tabView = RootTabBarViewController()
         let webView = WebViewController()
 
         let navController = UINavigationController(rootViewController: webView)
@@ -79,6 +64,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         self.window!.rootViewController = navController
         self.window!.makeKeyAndVisible()
+        if let tokenInfo = Current.settingsStore.tokenInfo,
+            let connectionInfo = Current.settingsStore.connectionInfo {
+            Current.tokenManager = TokenManager(connectionInfo: connectionInfo, tokenInfo: tokenInfo)
+        }
+
+        Current.authenticationControllerPresenter = { controller in
+            if let presentedController = navController.topViewController?.presentedViewController {
+                presentedController.present(controller, animated: true, completion: nil)
+                return
+            }
+
+            navController.topViewController?.present(controller, animated: true, completion: nil)
+        }
+
+        Current.signInRequiredCallback = {
+            let alert = UIAlertController(title: "You must sign in to continue",
+                                          message: "The server has rejected your credentials, "
+                                                  + "and you must sign in again to continue.",
+                                          preferredStyle: UIAlertControllerStyle.alert)
+            alert.addAction(UIAlertAction(title: L10n.okLabel, style: UIAlertActionStyle.default,
+                                          handler: { _ in
+                                            navController.popToViewController(webView, animated: true)
+                                            webView.showSettingsViewController()
+            }))
+
+            navController.present(alert, animated: true, completion: nil)
+        }
 
         return true
     }
@@ -89,11 +101,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationWillEnterForeground(_ application: UIApplication) {}
 
-    func applicationDidBecomeActive(_ application: UIApplication) {}
+    func applicationDidBecomeActive(_ application: UIApplication) { CheckPermissionsStatus() }
 
     func applicationWillTerminate(_ application: UIApplication) {}
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard let api = HomeAssistantAPI.authenticatedAPI() else {
+            return
+        }
 
         let tokenString = deviceToken.reduce("", {$0 + String(format: "%02X", $1)})
 
@@ -101,17 +116,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         print("Registering push with tokenString: \(tokenString)")
 
-        _ = HomeAssistantAPI.sharedInstance.RegisterDeviceForPush(deviceToken: tokenString).then { resp -> Void in
+        _ = api.registerDeviceForPush(deviceToken: tokenString).done { resp in
             if let pushId = resp.PushId {
                 print("Registered for push. Platform: \(resp.SNSPlatform ?? "MISSING"), PushID: \(pushId)")
-                CLSLogv("Registered for push:", getVaList([pushId]))
+                CLSLogv("Registered for push %@:", getVaList([pushId]))
                 Crashlytics.sharedInstance().setUserIdentifier(pushId)
                 prefs.setValue(pushId, forKey: "pushID")
-                HomeAssistantAPI.sharedInstance.pushID = pushId
-                _ = HomeAssistantAPI.sharedInstance.IdentifyDevice()
+                Current.settingsStore.pushID = pushId
+                _ = api.identifyDevice()
             }
         }
-
     }
 
     func application(_ application: UIApplication,
@@ -121,66 +135,66 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication,
-                     didReceiveRemoteNotification userInfo: [AnyHashable : Any],
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
                      fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         print("Received remote notification in completion handler!")
+        guard let api = HomeAssistantAPI.authenticatedAPI() else {
+            print("Remote notification handler failed because api was not authenticated")
+            completionHandler(.failed)
+            return
+        }
 
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
-
-        if let userInfoDict = userInfo as? [String:Any] {
-            if let hadict = userInfoDict["homeassistant"] as? [String:String] {
-                if let command = hadict["command"] {
+        if let userInfoDict = userInfo as? [String: Any],
+            let hadict = userInfoDict["homeassistant"] as? [String: String], let command = hadict["command"] {
                     switch command {
                     case "request_location_update":
+                        if prefs.bool(forKey: "locationUpdateOnNotification") == false {
+                            completionHandler(.noData)
+                        }
                         print("Received remote request to provide a location update")
-                        HomeAssistantAPI.sharedInstance.sendOneshotLocation().then { success -> Void in
+                        api.getAndSendLocation(trigger: .PushNotification).done { success in
                             print("Did successfully send location when requested via APNS?", success)
-                            if success == true {
-                                completionHandler(UIBackgroundFetchResult.newData)
-                            } else {
-                                completionHandler(UIBackgroundFetchResult.failed)
-                            }
+                            completionHandler(.newData)
                         }.catch {error in
                             print("Error when attempting to submit location update")
                             Crashlytics.sharedInstance().recordError(error)
-                            completionHandler(UIBackgroundFetchResult.failed)
+                            completionHandler(.failed)
                         }
                     default:
                         print("Received unknown command via APNS!", userInfo)
-                        completionHandler(UIBackgroundFetchResult.noData)
+                        completionHandler(.noData)
                     }
-                } else {
-                    completionHandler(UIBackgroundFetchResult.failed)
-                }
-            } else {
-                completionHandler(UIBackgroundFetchResult.failed)
-            }
         } else {
-            completionHandler(UIBackgroundFetchResult.failed)
+            completionHandler(.failed)
         }
     }
 
     func application(_ application: UIApplication,
                      performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
+        guard let api = HomeAssistantAPI.authenticatedAPI() else {
+            print("Background fetch failed because api was not authenticated")
+            completionHandler(.failed)
+            return
+        }
+
+        if prefs.bool(forKey: "locationUpdateOnBackgroundFetch") == false {
+            completionHandler(UIBackgroundFetchResult.noData)
+            return
+        }
+
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .full)
         print("Background fetch activated at \(timestamp)!")
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
-        if HomeAssistantAPI.sharedInstance.locationEnabled {
-            HomeAssistantAPI.sharedInstance.getAndSendLocation(trigger: .BackgroundFetch).then { success -> Void in
-                if success == true {
-                    completionHandler(UIBackgroundFetchResult.newData)
-                } else {
-                    completionHandler(UIBackgroundFetchResult.failed)
-                }
-                }.catch {error in
-                    print("Error when attempting to submit location update during background fetch")
-                    Crashlytics.sharedInstance().recordError(error)
-                    completionHandler(UIBackgroundFetchResult.failed)
+        if Current.settingsStore.locationEnabled {
+            api.getAndSendLocation(trigger: .BackgroundFetch).done { success in
+                print("Sending location via background fetch")
+                completionHandler(UIBackgroundFetchResult.newData)
+            }.catch {error in
+                print("Error when attempting to submit location update during background fetch")
+                Crashlytics.sharedInstance().recordError(error)
+                completionHandler(UIBackgroundFetchResult.failed)
             }
         } else {
-            HomeAssistantAPI.sharedInstance.IdentifyDevice().then { _ -> Void in
+            api.identifyDevice().done { _ in
                 completionHandler(UIBackgroundFetchResult.newData)
             }.catch {error in
                 print("Error when attempting to identify device during background fetch")
@@ -191,79 +205,100 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, handleActionWithIdentifier identifier: String?,
-                     forRemoteNotification userInfo: [AnyHashable : Any],
-                     withResponseInfo responseInfo: [AnyHashable : Any],
+                     forRemoteNotification userInfo: [AnyHashable: Any],
+                     withResponseInfo responseInfo: [AnyHashable: Any],
                      completionHandler: @escaping () -> Void) {
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
+        guard let api = HomeAssistantAPI.authenticatedAPI() else {
+            print("Notifcation action failed because api was not authenticated")
+            completionHandler()
+            return
+        }
+
         var userInput: String?
         if let userText = responseInfo[UIUserNotificationActionResponseTypedTextKey] as? String {
             userInput = userText
         }
-        _ = HomeAssistantAPI.sharedInstance.handlePushAction(identifier: identifier!,
-                                                             userInfo: userInfo,
-                                                             userInput: userInput)
+
+        _ = api.handlePushAction(identifier: identifier!, userInfo: userInfo, userInput: userInput).ensure {
+            completionHandler()
+        }
     }
 
     func application(_ app: UIApplication,
                      open url: URL,
-                     options: [UIApplicationOpenURLOptionsKey : Any] = [:]) -> Bool {
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
-        var serviceData: [String:String] = url.queryItems!
-        serviceData["sourceApplication"] = options[UIApplicationOpenURLOptionsKey.sourceApplication] as? String
+                     options: [UIApplicationOpenURLOptionsKey: Any] = [:]) -> Bool {
+        var serviceData: [String: String] = [:]
+        if let queryItems = url.queryItems {
+            serviceData = queryItems
+        }
         switch url.host! {
-        case "call_service": // homeassistant://call_service/device_tracker.see?entity_id=device_tracker.entity
-            let domain = url.pathComponents[1].components(separatedBy: ".")[0]
-            let service = url.pathComponents[1].components(separatedBy: ".")[1]
-            _ = HomeAssistantAPI.sharedInstance.CallService(domain: domain,
-                                                            service: service,
-                                                            serviceData: serviceData)
-            break
-        case "fire_event": // homeassistant://fire_event/custom_event?entity_id=device_tracker.entity
-            _ = HomeAssistantAPI.sharedInstance.CreateEvent(eventType: url.pathComponents[1],
-                                                            eventData: serviceData)
-            break
-        case "send_location": // homeassistant://send_location/
-            _ = HomeAssistantAPI.sharedInstance.sendOneshotLocation()
-            break
+        case "call_service":
+            callServiceURLHAndler(url, serviceData)
+        case "fire_event":
+            fireEventURLHandler(url, serviceData)
+        case "send_location":
+            sendLocationURLHandler()
+        case "auth-callback": // homeassistant://auth-callback
+           NotificationCenter.default.post(name: Notification.Name("AuthCallback"), object: nil,
+                                           userInfo: ["url": url])
         default:
             print("Can't route", url.host!)
+            showAlert(title: L10n.UrlHandler.Error.title,
+                      message: L10n.UrlHandler.NoService.message(url.host!))
         }
         return true
     }
 
-    func registerForSignificantLocationUpdates() {
-        if HomeAssistantAPI.sharedInstance.locationEnabled {
-            Location.getLocation(accuracy: .neighborhood, frequency: .significant, timeout: nil,
-                                 success: { (_, location) -> (Void) in
+    // MARK: - Private helpers
 
-                                HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"],
-                                                                      password: keychain["apiPassword"],
-                                                                      deviceID: keychain["deviceID"])
-
-                                HomeAssistantAPI.sharedInstance.submitLocation(updateType: .SignificantLocationUpdate,
-                                                                               coordinates: location.coordinate,
-                                                                               accuracy: location.horizontalAccuracy,
-                                                                               zone: nil)
-            }) { (_, _, error) -> (Void) in
-                // something went wrong. request will be cancelled automatically
-                NSLog("Something went wrong when trying to get significant location updates! Error was: @%",
-                      error.localizedDescription)
-                Crashlytics.sharedInstance().recordError(error)
-            }
+    private func fireEventURLHandler(_ url: URL, _ serviceData: [String: String]) {
+        // homeassistant://fire_event/custom_event?entity_id=device_tracker.entity
+        _ = firstly {
+            HomeAssistantAPI.authenticatedAPIPromise
+            }.then { api in
+                api.createEvent(eventType: url.pathComponents[1], eventData: serviceData)
+            }.done { _ in
+                showAlert(title: L10n.UrlHandler.FireEvent.Success.title,
+                          message: L10n.UrlHandler.FireEvent.Success.message(url.pathComponents[1]))
+            }.catch { error -> Void in
+                showAlert(title: L10n.UrlHandler.Error.title,
+                          message: L10n.UrlHandler.FireEvent.Error.message(url.pathComponents[1],
+                                                                           error.localizedDescription))
         }
     }
 
-    func resumeRegionMonitoring() {
-        if HomeAssistantAPI.sharedInstance.locationEnabled {
-            HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                                  deviceID: keychain["deviceID"])
-
-            HomeAssistantAPI.sharedInstance.beaconManager.resumeScanning()
+    private func callServiceURLHAndler(_ url: URL, _ serviceData: [String: String]) {
+        // homeassistant://call_service/device_tracker.see?entity_id=device_tracker.entity
+        let domain = url.pathComponents[1].components(separatedBy: ".")[0]
+        let service = url.pathComponents[1].components(separatedBy: ".")[1]
+        _ = firstly {
+            HomeAssistantAPI.authenticatedAPIPromise
+            }.then { api in
+                api.callService(domain: domain, service: service, serviceData: serviceData)
+            }.done { _ in
+                showAlert(title: L10n.UrlHandler.CallService.Success.title,
+                          message: L10n.UrlHandler.CallService.Success.message(url.pathComponents[1]))
+            }.catch { error in
+                showAlert(title: L10n.UrlHandler.Error.title,
+                          message: L10n.UrlHandler.CallService.Error.message(url.pathComponents[1],
+                                                                             error.localizedDescription))
         }
     }
 
+    private func sendLocationURLHandler() {
+        // homeassistant://send_location/
+        _ = firstly {
+            HomeAssistantAPI.authenticatedAPIPromise
+            }.then { api in
+                api.getAndSendLocation(trigger: .URLScheme)
+            }.done { _ in
+                showAlert(title: L10n.UrlHandler.SendLocation.Success.title,
+                          message: L10n.UrlHandler.SendLocation.Success.message)
+            }.catch { error in
+                showAlert(title: L10n.UrlHandler.Error.title,
+                          message: L10n.UrlHandler.SendLocation.Error.message(error.localizedDescription))
+        }
+    }
 }
 
 @available(iOS 10, *)
@@ -271,20 +306,45 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     public func userNotificationCenter(_ center: UNUserNotificationCenter,
                                        didReceive response: UNNotificationResponse,
                                        withCompletionHandler completionHandler: @escaping () -> Void) {
-        HomeAssistantAPI.sharedInstance.Setup(baseURLString: keychain["baseURL"], password: keychain["apiPassword"],
-                                              deviceID: keychain["deviceID"])
         var userText: String?
         if let textInput = response as? UNTextInputNotificationResponse {
             userText = textInput.userText
         }
-        HomeAssistantAPI.sharedInstance.handlePushAction(identifier: response.actionIdentifier,
-                                                         userInfo: response.notification.request.content.userInfo,
-                                                         userInput: userText).then { _ in
-                                                            completionHandler()
-            }.catch { err -> Void in
-                print("Error: \(err)")
-                Crashlytics.sharedInstance().recordError(err)
-                completionHandler()
+        let userInfo = response.notification.request.content.userInfo
+        if let openUrl = userInfo["url"] as? String,
+            let url = URL(string: openUrl) {
+            if prefs.bool(forKey: "confirmBeforeOpeningUrl") {
+                let alert = UIAlertController(title: L10n.Alerts.OpenUrlFromNotification.title,
+                                              message: L10n.Alerts.OpenUrlFromNotification.message(openUrl),
+                                              preferredStyle: UIAlertControllerStyle.alert)
+                alert.addAction(UIAlertAction(title: L10n.noLabel, style: UIAlertActionStyle.default, handler: nil))
+                alert.addAction(UIAlertAction(title: L10n.yesLabel, style: UIAlertActionStyle.default, handler: { _ in
+                    UIApplication.shared.open(url, options: [:],
+                                              completionHandler: nil)
+                }))
+                var rootViewController = UIApplication.shared.keyWindow?.rootViewController
+                if let navigationController = rootViewController as? UINavigationController {
+                    rootViewController = navigationController.viewControllers.first
+                }
+                if let tabBarController = rootViewController as? UITabBarController {
+                    rootViewController = tabBarController.selectedViewController
+                }
+                rootViewController?.present(alert, animated: true, completion: nil)
+            } else {
+                UIApplication.shared.open(url, options: [:],
+                                          completionHandler: nil)
+            }
+        }
+        firstly {
+            HomeAssistantAPI.authenticatedAPIPromise
+        }.then { api in
+            api.handlePushAction(identifier: response.actionIdentifier, userInfo: userInfo,
+                                 userInput: userText)
+        }.ensure {
+            completionHandler()
+        }.catch { err -> Void in
+            print("Error: \(err)")
+            Crashlytics.sharedInstance().recordError(err)
         }
     }
 
@@ -292,7 +352,19 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
                                        willPresent notification: UNNotification,
                                        // swiftlint:disable:next line_length
                                        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        print("Received notification!")
-        return completionHandler([.alert, .badge, .sound])
+        var methods: UNNotificationPresentationOptions = [.alert, .badge, .sound]
+        if let presentationOptions = notification.request.content.userInfo["presentation_options"] as? [String] {
+            methods = []
+            if presentationOptions.contains("sound") || notification.request.content.sound != nil {
+                methods.insert(.sound)
+            }
+            if presentationOptions.contains("badge") {
+                methods.insert(.badge)
+            }
+            if presentationOptions.contains("alert") {
+                methods.insert(.alert)
+            }
+        }
+        return completionHandler(methods)
     }
 }

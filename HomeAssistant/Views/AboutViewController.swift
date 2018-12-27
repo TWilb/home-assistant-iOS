@@ -29,6 +29,9 @@ class AboutViewController: FormViewController {
                                                                                   bundle: nil))
                 logoHeader.onSetupView = { view, _ in
                     view.AppTitle.text = L10n.About.Logo.appTitle
+                    if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                        view.Version.text = version
+                    }
                     view.Tagline.text = L10n.About.Logo.tagline
                 }
                 $0.header = logoHeader
@@ -41,6 +44,17 @@ class AboutViewController: FormViewController {
                         _ = vc.navigationController?.popViewController(animated: true)
                 })
             }
+            <<< ButtonRow {
+                    $0.title = L10n.About.Review.title
+                }.cellUpdate { cell, _ in
+                    cell.textLabel?.textAlignment = .left
+                    cell.accessoryType = .disclosureIndicator
+                    cell.editingAccessoryType = cell.accessoryType
+                    cell.textLabel?.textColor = nil
+                }.onCellSelection({ _, _  in
+                    let urlStr = "https://itunes.apple.com/app/id1099568401?action=write-review&mt=8"
+                    UIApplication.shared.openURL(URL(string: urlStr)!)
+                })
             +++ Section()
             <<< ButtonRow {
                 $0.title = L10n.About.Website.title
@@ -49,7 +63,7 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     openURLStringInBrowser(url: "https://home-assistant.io/")
                 })
 
@@ -60,7 +74,7 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     openURLStringInBrowser(url: "https://community.home-assistant.io/")
                 })
 
@@ -71,8 +85,8 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
-                    openURLStringInBrowser(url: "https://gitter.im/home-assistant/home-assistant")
+                }.onCellSelection({ _, _  in
+                    openURLStringInBrowser(url: "https://discord.gg/C7fXPmt")
                 })
 
             <<< ButtonRow {
@@ -82,29 +96,35 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     openURLStringInBrowser(url: "https://home-assistant.io/docs/ecosystem/ios/")
                 })
 
             <<< ButtonRow {
                 $0.title = L10n.About.HomeAssistantOnTwitter.title
+                if let lang = Locale.current.languageCode {
+                    $0.hidden = Condition(booleanLiteral: lang.hasPrefix("zh"))
+                }
                 }.cellUpdate { cell, _ in
                     cell.textLabel?.textAlignment = .left
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     self.openInTwitterApp(username: "home_assistant")
                 })
 
             <<< ButtonRow {
                 $0.title = L10n.About.HomeAssistantOnFacebook.title
+                if let lang = Locale.current.languageCode {
+                    $0.hidden = Condition(booleanLiteral: lang.hasPrefix("zh"))
+                }
                 }.cellUpdate { cell, _ in
                     cell.textLabel?.textAlignment = .left
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     self.openInFacebook(pageId: "292963007723872")
                 })
 
@@ -115,7 +135,7 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _  in
                     openURLStringInBrowser(url: "https://github.com/home-assistant/home-assistant-iOS")
                 })
 
@@ -126,26 +146,15 @@ class AboutViewController: FormViewController {
                     cell.accessoryType = .disclosureIndicator
                     cell.editingAccessoryType = cell.accessoryType
                     cell.textLabel?.textColor = nil
-                }.onCellSelection({ _ in
+                }.onCellSelection({ _, _ in
                     openURLStringInBrowser(url: "https://github.com/home-assistant/home-assistant-iOS/issues")
                 })
-
     }
 
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
         // Dispose of any resources that can be recreated.
     }
-
-    /*
-     // MARK: - Navigation
-
-     // In a storyboard-based application, you will often want to do a little preparation before navigation
-     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
-     // Get the new view controller using segue.destinationViewController.
-     // Pass the selected object to the new view controller.
-     }
-     */
 
     func generateAcknowledgements() -> CPDAcknowledgementsViewController {
         return CPDAcknowledgementsViewController.init(style: nil, acknowledgements: nil, contributions: nil)
@@ -202,7 +211,7 @@ class AboutViewController: FormViewController {
         }
     }
 
-    func close(_ sender: UIBarButtonItem) {
+    @objc func close(_ sender: UIBarButtonItem) {
         self.navigationController?.dismiss(animated: true, completion: nil)
     }
 }
@@ -211,6 +220,7 @@ class HomeAssistantLogoView: UIView {
 
     @IBOutlet weak var AppTitle: UILabel!
     @IBOutlet weak var Tagline: UILabel!
+    @IBOutlet weak var Version: UILabel!
     required init?(coder aDecoder: NSCoder) {
         super.init(coder: aDecoder)
     }

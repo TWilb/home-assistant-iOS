@@ -8,10 +8,10 @@
 
 import UserNotifications
 import MobileCoreServices
-import KeychainAccess
+import Shared
+import Alamofire
 
 final class NotificationService: UNNotificationServiceExtension {
-
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
 
@@ -21,6 +21,11 @@ final class NotificationService: UNNotificationServiceExtension {
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         print("APNSAttachmentService started!")
         print("Received userInfo", request.content.userInfo)
+
+        let event = ClientEvent(text: request.content.clientEventTitle, type: .notification,
+                                payload: request.content.userInfo as? [String: Any])
+        Current.clientEventStore.addEvent(event)
+
         self.contentHandler = contentHandler
         bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
 
@@ -28,29 +33,29 @@ final class NotificationService: UNNotificationServiceExtension {
             contentHandler(request.content)
         }
 
-        let keychain = Keychain(service: "io.robbie.homeassistant", accessGroup: "UTQFCBPQRF.io.robbie.HomeAssistant")
-        guard let baseURL = keychain["baseURL"] else {
-            return failEarly()
-        }
-        guard let apiPassword = keychain["apiPassword"] else {
-            return failEarly()
-        }
-
         guard let content = (request.content.mutableCopy() as? UNMutableNotificationContent) else {
             return failEarly()
         }
 
-        var incomingAttachment: [String:Any] = [:]
+        var incomingAttachment: [String: Any] = [:]
 
-        if let iAttachment = content.userInfo["attachment"] as? [String:Any] {
+        if let iAttachment = content.userInfo["attachment"] as? [String: Any] {
             incomingAttachment = iAttachment
         }
+
+        var needsAuth = false
 
         if content.categoryIdentifier == "camera" && incomingAttachment["url"] == nil {
             guard let entityId = content.userInfo["entity_id"] as? String else {
                 return failEarly()
             }
-            incomingAttachment["url"] = "\(baseURL)/api/camera_proxy/\(entityId)?api_password=\(apiPassword)"
+
+            incomingAttachment["url"] = "/api/camera_proxy/\(entityId)"
+            if incomingAttachment["content-type"] == nil {
+                incomingAttachment["content-type"] = "jpeg"
+            }
+
+            needsAuth = true
         } else {
             // Check if we still have an empty dictionary
             if incomingAttachment.isEmpty {
@@ -59,63 +64,53 @@ final class NotificationService: UNNotificationServiceExtension {
             }
         }
 
-        guard var attachmentString = incomingAttachment["url"] as? String else {
+        guard let attachmentString = incomingAttachment["url"] as? String else {
             return failEarly()
         }
 
-        if attachmentString.hasPrefix("/api/") { // prepend base URL
-            attachmentString = baseURL + attachmentString
+        if attachmentString.hasPrefix("/") { // URL is something like /api or /www so lets prepend base URL
+            needsAuth = true
         }
 
         guard let attachmentURL = URL(string: attachmentString) else {
             return failEarly()
         }
 
-        var attachmentOptions: [String:Any] = [:]
+        var attachmentOptions: [String: Any] = [:]
         if let attachmentContentType = incomingAttachment["content-type"] as? String {
-            var contentType: CFString = attachmentContentType as CFString
-            switch attachmentContentType.lowercased() {
-            case "aiff":
-                contentType = kUTTypeAudioInterchangeFileFormat
-            case "avi":
-                contentType = kUTTypeAVIMovie
-            case "gif":
-                contentType = kUTTypeGIF
-            case "jpeg", "jpg":
-                contentType = kUTTypeJPEG
-            case "mp3":
-                contentType = kUTTypeMP3
-            case "mpeg":
-                contentType = kUTTypeMPEG
-            case "mpeg2":
-                contentType = kUTTypeMPEG2Video
-            case "mpeg4":
-                contentType = kUTTypeMPEG4
-            case "mpeg4audio":
-                contentType = kUTTypeMPEG4Audio
-            case "png":
-                contentType = kUTTypePNG
-            case "waveformaudio":
-                contentType = kUTTypeWaveformAudio
-            default:
-                contentType = attachmentContentType as CFString
-            }
-            attachmentOptions[UNNotificationAttachmentOptionsTypeHintKey] = contentType
+            attachmentOptions[UNNotificationAttachmentOptionsTypeHintKey] =
+                self.contentTypeForString(attachmentContentType)
         }
+
         if let attachmentHideThumbnail = incomingAttachment["hide-thumbnail"] as? Bool {
             attachmentOptions[UNNotificationAttachmentOptionsThumbnailHiddenKey] = attachmentHideThumbnail
         }
-        guard let attachmentData = NSData(contentsOf:attachmentURL) else { return failEarly() }
-        guard let attachment = UNNotificationAttachment.create(fileIdentifier: attachmentURL.lastPathComponent,
-                                                               data: attachmentData,
-                                                               options: attachmentOptions) else {
-                                                                return failEarly()
-        }
 
-        content.attachments.append(attachment)
+        _ = HomeAssistantAPI.authenticatedAPI()?.downloadDataAt(url: attachmentURL,
+                                                                needsAuth: needsAuth).done { fileURL in
 
-        if let copiedContent = content.copy() as? UNNotificationContent {
-            contentHandler(copiedContent)
+            do {
+                let attachment = try UNNotificationAttachment(identifier: attachmentURL.lastPathComponent, url: fileURL,
+                                                              options: attachmentOptions)
+                content.attachments.append(attachment)
+            } catch let error {
+                print("Error when building UNNotificationAttachment: \(error)")
+
+                return failEarly()
+            }
+
+            if let copiedContent = content.copy() as? UNNotificationContent {
+                contentHandler(copiedContent)
+            }
+        }.catch { error in
+
+            if let error = error as? AFError, let desc = error.errorDescription {
+                print("Alamofire error while getting attachment data", desc)
+            } else {
+                print("Error when getting attachment data!", error.localizedDescription)
+            }
+
+            return failEarly()
         }
     }
 
@@ -128,27 +123,35 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
-}
-
-extension UNNotificationAttachment {
-
-    /// Save the attachment URL to disk
-    static func create(fileIdentifier: String, data: NSData,
-                       options: [AnyHashable : Any]?) -> UNNotificationAttachment? {
-        let fileManager = FileManager.default
-        let tmpSubFolderName = ProcessInfo.processInfo.globallyUniqueString
-        let tmpSubFolderURL = NSURL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(tmpSubFolderName,
-                                                                                                    isDirectory: true)
-
-        do {
-            try fileManager.createDirectory(at: tmpSubFolderURL!, withIntermediateDirectories: true, attributes: nil)
-            let fileURL = tmpSubFolderURL?.appendingPathComponent(fileIdentifier)
-            try data.write(to: fileURL!, options: [])
-            return try UNNotificationAttachment.init(identifier: "", url: fileURL!, options: options)
-        } catch let error {
-            print("Error when saving attachment: \(error)")
+    private func contentTypeForString(_ contentTypeString: String) -> CFString {
+        let contentType: CFString
+        switch contentTypeString.lowercased() {
+        case "aiff":
+            contentType = kUTTypeAudioInterchangeFileFormat
+        case "avi":
+            contentType = kUTTypeAVIMovie
+        case "gif":
+            contentType = kUTTypeGIF
+        case "jpeg", "jpg":
+            contentType = kUTTypeJPEG
+        case "mp3":
+            contentType = kUTTypeMP3
+        case "mpeg":
+            contentType = kUTTypeMPEG
+        case "mpeg2":
+            contentType = kUTTypeMPEG2Video
+        case "mpeg4":
+            contentType = kUTTypeMPEG4
+        case "mpeg4audio":
+            contentType = kUTTypeMPEG4Audio
+        case "png":
+            contentType = kUTTypePNG
+        case "waveformaudio":
+            contentType = kUTTypeWaveformAudio
+        default:
+            contentType = contentTypeString as CFString
         }
 
-        return nil
+        return contentType
     }
 }

@@ -8,6 +8,7 @@
 
 import UIKit
 import MapKit
+import Shared
 
 enum MapType: Int {
     case standard = 0
@@ -43,10 +44,10 @@ class DevicesMapViewController: UIViewController, MKMapViewDelegate {
                                  action: #selector(DevicesMapViewController.switchMapType(_:)),
                                  for: .valueChanged)
 
-        let uploadIcon = getIconForIdentifier("mdi:upload",
-                                              iconWidth: 30,
-                                              iconHeight: 30,
-                                              color: colorWithHexString("#44739E", alpha: 1))
+        let uploadIcon = UIImage.iconForIdentifier("mdi:upload",
+                                                   iconWidth: 30,
+                                                   iconHeight: 30,
+                                                   color: UIColor.defaultEntityColor)
 
         let leftBarItem = UIBarButtonItem(image: uploadIcon,
                                           style: .plain,
@@ -61,30 +62,22 @@ class DevicesMapViewController: UIViewController, MKMapViewDelegate {
 
         self.navigationItem.rightBarButtonItem = rightBarItem
 
-        // Do any additional setup after loading the view.
-        mapView = MKMapView()
+        self.configureMapView()
 
-        mapView.mapType = .standard
-        mapView.frame = view.frame
-        mapView.delegate = self
-        mapView.showsUserLocation = false
-        mapView.showsPointsOfInterest = false
-        view.addSubview(mapView)
-
-        let locateMeButton = MKUserTrackingBarButtonItem(mapView: mapView)
+        let locateMeButton = MKUserTrackingBarButtonItem(mapView: self.mapView)
         let flexibleSpace = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: self, action: nil)
         let segmentedControlButtonItem = UIBarButtonItem(customView: typeController)
         //        let bookmarksButton = UIBarButtonItem(barButtonSystemItem: .Bookmarks, target: self, action: nil)
 
         self.setToolbarItems([locateMeButton, flexibleSpace, segmentedControlButtonItem, flexibleSpace], animated: true)
 
-        if let cachedEntities = HomeAssistantAPI.sharedInstance.cachedEntities {
+        if let api = HomeAssistantAPI.authenticatedAPI(), let cachedEntities = api.cachedEntities {
             if let zoneEntities: [Zone] = cachedEntities.filter({ (entity) -> Bool in
                 return entity.Domain == "zone"
             }) as? [Zone] {
                 for zone in zoneEntities {
-                    // swiftlint:disable:next line_length
-                    let circle = HACircle.init(center: zone.locationCoordinates(), radius: CLLocationDistance(zone.Radius))
+                    let circle = HACircle.init(center: zone.locationCoordinates(),
+                                               radius: CLLocationDistance(zone.Radius))
                     circle.type = "zone"
                     mapView.add(circle)
                 }
@@ -94,21 +87,21 @@ class DevicesMapViewController: UIViewController, MKMapViewDelegate {
                 return entity.Domain == "device_tracker"
             }) as? [DeviceTracker] {
                 for device in deviceEntities {
-                    if device.Latitude.value == nil || device.Longitude.value == nil {
+                    if device.Latitude == nil || device.Longitude == nil {
                         continue
                     }
                     let dropPin = DeviceAnnotation()
                     dropPin.coordinate = device.locationCoordinates()
                     dropPin.title = device.Name
                     var subtitlePieces: [String] = []
-                    if let battery = device.Battery.value {
+                    if let battery = device.Battery {
                         subtitlePieces.append(L10n.DevicesMap.batteryLabel+": "+String(battery)+"%")
                     }
                     dropPin.subtitle = subtitlePieces.joined(separator: " / ")
                     dropPin.device = device
                     mapView.addAnnotation(dropPin)
 
-                    if let radius = device.GPSAccuracy.value {
+                    if let radius = device.GPSAccuracy {
                         let circle = HACircle.init(center: device.locationCoordinates(), radius: radius)
                         circle.type = "device"
                         mapView.add(circle)
@@ -141,7 +134,7 @@ class DevicesMapViewController: UIViewController, MKMapViewDelegate {
         // Dispose of any resources that can be recreated.
     }
 
-    func switchMapType(_ sender: UISegmentedControl) {
+    @objc func switchMapType(_ sender: UISegmentedControl) {
         let mapType = MapType(rawValue: sender.selectedSegmentIndex)
         switch mapType! {
         case .standard:
@@ -189,26 +182,42 @@ class DevicesMapViewController: UIViewController, MKMapViewDelegate {
         }
     }
 
-    func closeMapView(_ sender: UIBarButtonItem) {
+    @objc func closeMapView(_ sender: UIBarButtonItem) {
         self.navigationController?.dismiss(animated: true, completion: nil)
     }
 
-    func sendCurrentLocation(_ sender: UIBarButtonItem) {
-        HomeAssistantAPI.sharedInstance.sendOneshotLocation().then { _ -> Void in
-            let alert = UIAlertController(title: L10n.ManualLocationUpdateNotification.title,
-                                          message: L10n.ManualLocationUpdateNotification.message,
-                                          preferredStyle: UIAlertControllerStyle.alert)
-            alert.addAction(UIAlertAction(title: L10n.okLabel, style: UIAlertActionStyle.default, handler: nil))
-            self.present(alert, animated: true, completion: nil)
+    @objc func sendCurrentLocation(_ sender: UIBarButtonItem) {
+        HomeAssistantAPI.authenticatedAPIPromise.then { api in
+            api.getAndSendLocation(trigger: .Manual)
+            }.done { _ in
+                let alert = UIAlertController(title: L10n.ManualLocationUpdateNotification.title,
+                                              message: L10n.ManualLocationUpdateNotification.message,
+                                              preferredStyle: UIAlertControllerStyle.alert)
+                alert.addAction(UIAlertAction(title: L10n.okLabel, style: UIAlertActionStyle.default,
+                                              handler: nil))
+                self.present(alert, animated: true, completion: nil)
             }.catch {error in
                 let nserror = error as NSError
-                let alert = UIAlertController(title: L10n.ManualLocationUpdateFailedNotification.title
-                    ,
-                                              // swiftlint:disable:next line_length
-                    message: L10n.ManualLocationUpdateFailedNotification.message(nserror.localizedDescription),
-                    preferredStyle: UIAlertControllerStyle.alert)
-                alert.addAction(UIAlertAction(title: L10n.okLabel, style: UIAlertActionStyle.default, handler: nil))
+                let errorDescription = nserror.localizedDescription
+                let message = L10n.ManualLocationUpdateFailedNotification.message(errorDescription)
+                let alert = UIAlertController(title: L10n.ManualLocationUpdateFailedNotification.title,
+                                              message: message, preferredStyle: UIAlertControllerStyle.alert)
+                alert.addAction(UIAlertAction(title: L10n.okLabel, style: UIAlertActionStyle.default,
+                                              handler: nil))
                 self.present(alert, animated: true, completion: nil)
         }
+    }
+
+    // MARK: - Private helpers
+
+    private func configureMapView() {
+        self.mapView = MKMapView()
+
+        self.mapView.mapType = .standard
+        self.mapView.frame = view.frame
+        self.mapView.delegate = self
+        self.mapView.showsUserLocation = false
+        self.mapView.showsPointsOfInterest = false
+        view.addSubview(self.mapView)
     }
 }
